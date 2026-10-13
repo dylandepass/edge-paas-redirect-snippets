@@ -10,7 +10,6 @@ These snippets apply to Adobe Commerce on Cloud (PaaS), where Fastly sits in fro
 
 - [Why](#why)
 - [How it works](#how-it-works)
-- [Design decisions](#design-decisions)
 - [Requirements](#requirements)
 - [Install](#install)
 - [Configuration](#configuration)
@@ -94,30 +93,6 @@ Once the cache is warm, every pass is a cache hit and neither EDS nor Magento is
 | `snippets/redirect_lookup_deliver.vcl` | deliver | 40 | Decides when to restart and what to serve |
 | `debug/redirect_lookup_debug_recv.vcl` | recv | 111 | Optional: clears the debug trace |
 | `debug/redirect_lookup_debug_deliver.vcl` | deliver | 35 | Optional: records each pass in `X-RL-Trace` |
-
-## Design decisions
-
-Each of these came from something that didn't work during testing.
-
-1. **Restart in `vcl_deliver`, not `vcl_fetch`.** In a Fastly POP, `vcl_fetch` can run on a different server from the one handling the client ("clustering"). A restart from there loses any request headers set before it. Fastly's [clustering guide](https://www.fastly.com/documentation/guides/full-site-delivery/custom-vcl/clustering) recommends restarting in `vcl_deliver` for this reason. An earlier version restarted in `vcl_fetch` and lost the lookup marker.
-
-2. **A separate cache key for the Magento lookup.** Restarting in `vcl_deliver` means the EDS 404 gets cached. Without its own key, the lookup for that URL would find the cached EDS 404 and never reach Magento. `redirect_lookup_hash.vcl` adds `redirect-lookup` to the key for pass 1 only.
-
-3. **Clustering back on for restarted passes.** Fastly turns off clustering after a restart, so the lookup and final passes would only use the cache on one server instead of the whole POP. Setting `Fastly-Force-Shield: 1` turns it back on (the header is unrelated to shielding despite its name). This is safe because pass 1's fetch only changes the response, and all decisions are made in `vcl_deliver`.
-
-4. **The marker header is only trusted on our own restarts.** `X-Redirect-Lookup` is cleared on every client request (`req.restarts == 0`), so a client can't send it to force a Magento lookup.
-
-5. **`vcl_fetch` labels, `vcl_deliver` decides.** The fetch snippet sets `X-Redirect-Result` on the cached response. Response data survives clustering; request changes made in `vcl_fetch` don't.
-
-6. **Only redirects that change the path count.** With Magento's **Auto-redirect to Base URL** turned on, Magento returns a 302 to the same path on its base-URL host for any request on another host. That's not a URL rewrite. Caching it would send every 404 to the wrong host, so the fetch snippet treats a same-path redirect as "no redirect".
-
-7. **`Location` is rewritten to the public host.** Magento builds redirect targets from its base URL, which on Adobe Commerce on Cloud can be an origin hostname ending in `.magento.cloud`. The fetch snippet replaces those hosts with the host the visitor used.
-
-8. **Only eligible 404s trigger a lookup.** Only GET or HEAD requests whose path ends in `.html` and that aren't Commerce routes (`x-commerce` not set) are looked up. This keeps random 404s and scanners from reaching Magento.
-
-9. **The restart budget fits.** Fastly allows three restarts per request; the fourth returns a 503 ([Fastly `restart`](https://www.fastly.com/documentation/reference/vcl/statements/restart/)). These snippets use at most two, leaving room for the default VCL's single retry on a 5xx.
-
-10. **`Set-Cookie` and `Vary` are removed from lookup responses.** Magento sets cookies and varies responses. Without removing them, the lookup answers wouldn't be cached or would be split into many variants.
 
 ## Requirements
 
